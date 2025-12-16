@@ -55,20 +55,13 @@ Changelog:
 
 -- Consultar movimento financeiro
 SELECT 
-    NR_SEQUENCIA,
-    NR_SEQ_TRANS_FINANC,
-    VL_MOVIMENTO,
-    DT_MOVIMENTO,
-    NR_DOCUMENTO
+    *
 FROM MOVTO_TRANS_FINANC
 WHERE NR_SEQUENCIA = 42128;  -- ⚠️ AJUSTAR: Sequência do movimento
 
 -- Consultar conciliação bancária vinculada
 SELECT 
-    NR_SEQ_MOVTO_TRANS,
-    DT_CONCILIACAO,
-    VL_CONCILIADO,
-    NR_SEQ_CONTA_BANC
+    *
 FROM CONCIL_BANC_PEND_TASY
 WHERE NR_SEQ_MOVTO_TRANS = 42128;  -- ⚠️ AJUSTAR: Sequência do movimento
 
