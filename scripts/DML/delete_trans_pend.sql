@@ -77,13 +77,47 @@ FROM DUAL;
 -- ⚠️ ORDEM CRÍTICA: Sempre delete FILHO antes do PAI
 -- ==================================================================================
 
+-- Consultar movimento financeiro pelo NR_TITULO
+
+select NR_SEQUENCIA, NR_SEQ_MOVTO_ORIG, NR_SEQ_TRANS_FINANC, VL_TRANSACAO from MOVTO_TRANS_FINANC
+where NR_SEQ_TITULO_PAGAR = 33259
+order by NR_SEQUENCIA ASC;
+
+-- Alterar movimento financeiro para TARIFA BANCÁRIA QUE PERMITE EXCLUIR
+
+
+UPDATE  MOVTO_TRANS_FINANC SET NR_SEQ_TRANS_FINANC = 150
+WHERE NR_SEQUENCIA = 46663;
+
+
 -- 1º DELETE: Excluir conciliação bancária (FILHO)
 DELETE FROM CONCIL_BANC_PEND_TASY
-WHERE NR_SEQ_MOVTO_TRANS = 42128;  -- ⚠️ AJUSTAR: Sequência do movimento
+WHERE NR_SEQ_MOVTO_TRANS = 46663;  -- ⚠️ AJUSTAR: Sequência do movimento
 
 -- 2º DELETE: Excluir movimento financeiro (PAI)
 DELETE FROM MOVTO_TRANS_FINANC
-WHERE NR_SEQUENCIA = 42128;  -- ⚠️ AJUSTAR: Sequência do movimento
+WHERE NR_SEQUENCIA = 46663;  -- ⚠️ AJUSTAR: Sequência do movimento
+
+-- Consultar BAIXA CC
+
+select * from TITULO_PAGAR_BAIXA_CC
+where NR_TITULO = 33259 ;
+
+-- DELETAR BAIXA CC
+
+delete from TITULO_PAGAR_BAIXA_CC
+where NR_TITULO = 33259 ;
+
+-- Consultar BAIXA 
+
+select * from TITULO_PAGAR_BAIXA
+where NR_TITULO = 33259 ;
+
+-- DELETAR BAIXA 
+
+delete from TITULO_PAGAR_BAIXA
+where NR_TITULO = 33259;
+
 
 
 -- ==================================================================================
