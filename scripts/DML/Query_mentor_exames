@@ -1,0 +1,170 @@
+create or replace procedure csb_lab_inserir_propaci(		nr_atendimento_p		number,
+				nr_seq_exame_p		varchar2,
+				dt_exame_p		date)  is
+
+cd_cgc_prestador_w	varchar2(14);
+cd_estabelecimento_w	number(5);
+ie_tipo_atendimento_w	number(5);
+
+cd_convenio_w		number(5);
+cd_categoria_w		varchar2(10);
+ie_tipo_convenio_w		number(2);
+nr_doc_convenio_w	varchar2(20);
+
+nr_seq_atepacu_w		number(10,0);
+dt_ent_unidade_w		date;
+cd_setor_atendimento_w	number(5);
+
+nr_seq_exame_w		number(10);
+
+cd_procedimento_w	number(15);
+ie_origem_proced_w	number(10);
+ds_erro_w		varchar2(255);
+
+ie_medico_executor_w	varchar2(30);
+cd_cgc_consisitdo_w	varchar2(14);
+cd_medico_regra_w	varchar2(10);
+cd_profissional_w		varchar2(10);
+
+nr_sequencia_w		number(10);
+
+nr_seq_classificacao_w	number(10);
+nr_seq_proc_interno_aux_w	number(10);
+cd_plano_convenio_w		varchar2(10);
+qt_registro_w number;
+nr_seq_proc_interno_w procedimento_paciente.nr_seq_proc_interno%type;
+nr_interno_conta_w conta_paciente.nr_interno_conta%type;
+
+begin
+
+select	a.cd_cgc,
+	a.cd_estabelecimento,
+	b.ie_tipo_atendimento,
+	nr_seq_classificacao
+into	cd_cgc_prestador_w,
+	cd_estabelecimento_w,
+	ie_tipo_atendimento_w,
+	nr_seq_classificacao_w
+from	estabelecimento a,
+	atendimento_paciente b
+where	a.cd_estabelecimento = b.cd_estabelecimento
+and	b.nr_atendimento = nr_atendimento_p;
+
+select	cd_convenio,
+	cd_categoria,
+	ie_tipo_convenio,
+	nr_doc_convenio,
+	cd_plano_convenio
+into	cd_convenio_w,
+	cd_categoria_w,
+	ie_tipo_convenio_w,
+	nr_doc_convenio_w,
+	cd_plano_convenio_w
+from	atendimento_paciente_v
+where	nr_atendimento = nr_atendimento_p;
+
+nr_seq_exame_w := nr_seq_exame_p;
+
+select nvl(max(nr_sequencia),0)
+into nr_seq_proc_interno_w
+from proc_interno
+where nr_seq_exame_lab = nr_seq_exame_w;
+
+if (nvl(nr_seq_proc_interno_w,0) > 0) then 
+
+	obter_proc_tab_interno( nr_seq_proc_interno_w, 0, nr_atendimento_p, 0, cd_procedimento_w, ie_origem_proced_w,null,null,null); 	
+
+	nr_seq_atepacu_w := obter_atepacu_paciente(nr_atendimento_p, 'A');
+
+	select	dt_entrada_unidade,
+		cd_setor_atendimento
+	into	dt_ent_unidade_w,
+		cd_setor_atendimento_w
+	from	atend_paciente_unidade
+	where	nr_seq_interno = nr_seq_atepacu_w;
+	
+	
+	select count(1) 
+	into qt_registro_w
+	from procedimento_paciente
+	where nr_seq_proc_interno = nr_seq_proc_interno_w
+	and nr_atendimento = nr_atendimento_p
+	and cd_motivo_exc_conta is null
+	and trunc(dt_procedimento) = trunc(nvl(dt_exame_p,sysdate));
+
+	if (qt_registro_w = 0) then 
+	
+		select max(nr_interno_conta)
+		into nr_interno_conta_w
+		from conta_paciente
+		where 1=1
+		and nr_atendimento = nr_atendimento_p
+		and ie_status_acerto = 1
+		and ie_cancelamento is null
+		and sysdate between trunc(nvl(dt_periodo_inicial,sysdate)) and trunc(nvl(dt_periodo_final,sysdate));
+	
+	
+		consiste_medico_executor(cd_estabelecimento_w, cd_convenio_w, cd_setor_atendimento_w,
+					cd_procedimento_w, ie_origem_proced_w, ie_tipo_atendimento_w, nr_seq_exame_w,null,
+					ie_medico_executor_w, cd_cgc_consisitdo_w, cd_medico_regra_w, cd_profissional_w, null,
+					nvl(dt_exame_p,dt_ent_unidade_w),nr_seq_classificacao_w, 'N', null, null);
+
+		select procedimento_paciente_seq.nextval
+		into nr_sequencia_w
+		from dual;
+
+		insert into procedimento_paciente
+			(nr_sequencia,
+			nr_atendimento,
+			nr_interno_conta,
+			dt_entrada_unidade,
+			cd_procedimento,
+			dt_procedimento,
+			qt_procedimento,
+			dt_atualizacao,
+			nm_usuario,
+			cd_convenio,
+			cd_categoria,
+			cd_acao,
+			cd_setor_atendimento,
+			ie_origem_proced,
+			tx_procedimento,
+			nm_usuario_original,
+			nr_seq_atepacu,
+			ie_auditoria,
+			cd_cgc_prestador,
+			cd_medico_executor,
+			nr_doc_convenio,
+			cd_pessoa_fisica)
+		values
+			(nr_sequencia_w,
+			nr_atendimento_p,
+			nr_interno_conta_w,
+			dt_ent_unidade_w,
+			cd_procedimento_w,
+			nvl(dt_exame_p,dt_ent_unidade_w),
+			1,
+			sysdate,
+			'MENTOR_JOB',
+			cd_convenio_w,
+			cd_categoria_w,
+			1,
+			cd_setor_atendimento_w,
+			ie_origem_proced_w,
+			100,
+			'MENTOR_JOB',
+			nr_seq_atepacu_w,
+			'N',
+			nvl(cd_cgc_consisitdo_w, cd_cgc_prestador_w),
+			cd_medico_regra_w,
+			nr_doc_convenio_w,
+			cd_profissional_w);
+
+		--consiste_exec_procedimento(nr_sequencia_w, ds_erro_w);
+		atualiza_preco_procedimento(nr_sequencia_w, cd_convenio_w, 'MENTOR_JOB');
+
+		commit;
+	end if;
+end if;
+
+end csb_lab_inserir_propaci;
