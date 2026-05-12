@@ -1,0 +1,195 @@
+/*
+================================================================================
+  Objeto      : CSB_PAC_TRAT_ALTA_AUTO
+  Tipo        : COMPOUND TRIGGER (FOR UPDATE - PACIENTE_TRATAMENTO)
+  Schema      : TASY
+  Banco       : Produção
+  Autor       : Sérgio Cerqueira
+  Data        : 12/05/2026
+  Versão      : 1.1
+
+  Objetivo
+  --------------------------------------------------------------------------
+  Gerar alta automática no atendimento de origem ao finalizar tratamento
+  de hemodiálise, mapeando o motivo de fim do tratamento (MOTIVO_FIM)
+  para o motivo de alta correspondente (MOTIVO_ALTA) na tabela
+  ATENDIMENTO_PACIENTE.
+
+  Contexto / Problema
+  --------------------------------------------------------------------------
+  Ao clicar em "Finalizar Tratamento" na tela de Paciente Tratamento
+  (módulo Hemodiálise), o TASY executa diversas ações (descarte de
+  dializador, fechamento de escala, suspensão de CPOE, etc.) porém
+  NÃO efetua a alta do atendimento vinculado. A lógica de alta depende
+  de parâmetros em HD_PARAMETRO (CD_MOTIVO_ALTA_AUTOMATICA,
+  NR_SEQ_MOTIVO_FIM_ALTA) que não suportam mapeamento dinâmico por
+  motivo de fim — aceitam apenas um valor fixo.
+
+  Esta trigger resolve o problema fazendo o mapeamento motivo_fim →
+  motivo_alta e dando a alta automaticamente.
+
+  Mapeamento MOTIVO_FIM (nr_sequencia) → MOTIVO_ALTA (cd_motivo_alta)
+  --------------------------------------------------------------------------
+    4  Óbito                   → 7  Óbito
+    5  Transplante             → 21 Transplante
+    6  Transferência           → 17 Transferência de centro
+    7  Alta do programa        → 14 Alta ambulatorial
+    8  Abandono                → 18 Abandono
+    9  Mudança de modalidade   → 19 Mudança de modalidade
+
+  Motivos de fim não listados acima NÃO geram alta automática.
+
+  Funcionamento
+  --------------------------------------------------------------------------
+  - AFTER EACH ROW: coleta os dados do tratamento finalizado em uma
+    collection PL/SQL (sem DML, evita ORA-04091 mutating table).
+  - AFTER STATEMENT: percorre a collection e efetua o UPDATE na
+    ATENDIMENTO_PACIENTE com dt_alta e cd_motivo_alta mapeado.
+  - Prioriza NR_ATEND_ORIGEM do tratamento; se NULL, busca o
+    atendimento aberto mais recente do paciente.
+  - Não sobrescreve alta já existente.
+
+  Nota técnica
+  --------------------------------------------------------------------------
+  Compound trigger é necessário porque a trigger ATENDIMENTO_PACIENTE_UPDATE
+  (padrão TASY) faz SELECT na PACIENTE_TRATAMENTO. Se usássemos um
+  row-level trigger simples, a PACIENTE_TRATAMENTO estaria mutante nesse
+  momento, gerando ORA-04091. Com compound trigger, o UPDATE na
+  ATENDIMENTO_PACIENTE só ocorre na fase AFTER STATEMENT, quando a
+  PACIENTE_TRATAMENTO já não está mais mutante.
+
+  Tabelas envolvidas
+  --------------------------------------------------------------------------
+  - PACIENTE_TRATAMENTO    (origem - FOR UPDATE)
+  - ATENDIMENTO_PACIENTE   (destino - UPDATE dt_alta, cd_motivo_alta)
+  - MOTIVO_FIM             (referência de mapeamento)
+  - MOTIVO_ALTA            (referência de mapeamento)
+
+  Dependências
+  --------------------------------------------------------------------------
+  - Trigger TASY: ATENDIMENTO_PACIENTE_UPDATE
+  - Procedure TASY: FINALIZAR_TRATAMENTO_OBITO
+  - Procedure TASY: HD_FINALIZAR_TRATAMENTO
+
+  Changelog
+  --------------------------------------------------------------------------
+  12/05/2026 - v1.0 - Criação inicial como row-level trigger (AFTER UPDATE)
+  12/05/2026 - v1.1 - Refatorado para compound trigger para evitar
+                       ORA-04091 causado por ATENDIMENTO_PACIENTE_UPDATE
+                       lendo PACIENTE_TRATAMENTO durante o UPDATE
+================================================================================
+*/
+
+CREATE OR REPLACE TRIGGER csb_pac_trat_alta_auto
+FOR UPDATE ON paciente_tratamento
+COMPOUND TRIGGER
+
+    -- Estrutura para armazenar dados entre as fases
+    TYPE t_rec IS RECORD (
+        cd_pessoa_fisica    VARCHAR2(10),
+        nr_atend_origem     NUMBER(10),
+        nr_seq_motivo_fim   NUMBER(10),
+        nm_usuario          VARCHAR2(15)
+    );
+    TYPE t_tab IS TABLE OF t_rec INDEX BY PLS_INTEGER;
+
+    g_tab   t_tab;
+    g_idx   PLS_INTEGER := 0;
+
+    ---------------------------------------------------------------------------
+    -- AFTER EACH ROW: coleta dados (tabela ainda mutante, sem DML aqui)
+    ---------------------------------------------------------------------------
+    AFTER EACH ROW IS
+    BEGIN
+        IF :NEW.dt_final_tratamento IS NOT NULL
+           AND :OLD.dt_final_tratamento IS NULL THEN
+            g_idx := g_idx + 1;
+            g_tab(g_idx).cd_pessoa_fisica  := :NEW.cd_pessoa_fisica;
+            g_tab(g_idx).nr_atend_origem   := :NEW.nr_atend_origem;
+            g_tab(g_idx).nr_seq_motivo_fim := :NEW.nr_seq_motivo_fim;
+            g_tab(g_idx).nm_usuario        := :NEW.nm_usuario;
+        END IF;
+    END AFTER EACH ROW;
+
+    ---------------------------------------------------------------------------
+    -- AFTER STATEMENT: executa a alta (tabela já não é mais mutante)
+    ---------------------------------------------------------------------------
+    AFTER STATEMENT IS
+        v_motivo_alta   NUMBER;
+        v_nr_atend      NUMBER(10);
+        v_dt_alta_exist DATE;
+    BEGIN
+        FOR i IN 1..g_idx LOOP
+
+            -- Mapeia motivo_fim → motivo_alta
+            v_motivo_alta := CASE g_tab(i).nr_seq_motivo_fim
+                                WHEN 4 THEN 7    -- Óbito
+                                WHEN 5 THEN 21   -- Transplante
+                                WHEN 6 THEN 17   -- Transferência de centro
+                                WHEN 7 THEN 14   -- Alta ambulatorial (Alta do programa)
+                                WHEN 8 THEN 18   -- Abandono
+                                WHEN 9 THEN 19   -- Mudança de modalidade
+                                ELSE NULL
+                             END;
+
+            -- Se o motivo não está no mapeamento, pula
+            IF v_motivo_alta IS NULL THEN
+                CONTINUE;
+            END IF;
+
+            -- Prioriza o atendimento de origem do tratamento
+            v_nr_atend := g_tab(i).nr_atend_origem;
+
+            -- Fallback: busca atendimento aberto mais recente
+            IF v_nr_atend IS NULL THEN
+                BEGIN
+                    SELECT MAX(nr_atendimento)
+                    INTO   v_nr_atend
+                    FROM   atendimento_paciente
+                    WHERE  cd_pessoa_fisica = g_tab(i).cd_pessoa_fisica
+                      AND  dt_alta IS NULL;
+                EXCEPTION
+                    WHEN OTHERS THEN
+                        v_nr_atend := NULL;
+                END;
+            END IF;
+
+            -- Se não encontrou atendimento, pula
+            IF v_nr_atend IS NULL THEN
+                CONTINUE;
+            END IF;
+
+            -- Verifica se já possui alta (não sobrescreve)
+            BEGIN
+                SELECT dt_alta
+                INTO   v_dt_alta_exist
+                FROM   atendimento_paciente
+                WHERE  nr_atendimento = v_nr_atend;
+
+                IF v_dt_alta_exist IS NOT NULL THEN
+                    CONTINUE;
+                END IF;
+            EXCEPTION
+                WHEN NO_DATA_FOUND THEN
+                    CONTINUE;
+            END;
+
+            -- Efetua a alta no atendimento
+            UPDATE atendimento_paciente
+            SET    dt_alta        = SYSDATE,
+                   cd_motivo_alta = v_motivo_alta,
+                   nm_usuario     = g_tab(i).nm_usuario,
+                   dt_atualizacao = SYSDATE
+            WHERE  nr_atendimento = v_nr_atend
+              AND  dt_alta IS NULL;
+
+        END LOOP;
+
+        -- Limpa o buffer
+        g_tab.DELETE;
+        g_idx := 0;
+
+    END AFTER STATEMENT;
+
+END csb_pac_trat_alta_auto;
+/
